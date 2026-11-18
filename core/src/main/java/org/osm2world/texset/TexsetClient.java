@@ -28,6 +28,7 @@ import org.osm2world.scene.material.TextureLayer;
 import org.osm2world.util.platform.json.JsonUtil;
 import org.osm2world.util.platform.uri.LoadUriUtil;
 import org.osm2world.world.data.WorldObject;
+import org.osm2world.world.modules.StreetFurnitureModule;
 import org.osm2world.world.modules.building.Building;
 import org.osm2world.world.modules.building.BuildingPart;
 
@@ -42,7 +43,9 @@ import org.osm2world.world.modules.building.BuildingPart;
  * <li>walls of building parts mapped as ways, matched by the key {@code w<way id>:wall:<node a>-<node b>}
  * (either node order); because the map projection rounds positions, the exact geom_hash cannot be reproduced,
  * so the geometry is checked against the stored {@code edge} with the position tolerance (0.3 m) instead;</li>
- * <li>node faces {@code n<id>:face} (e.g. billboards), placed by their authoritative {@code plane}.</li>
+ * <li>node faces {@code n<id>:face} (e.g. billboards), placed by their {@code plane}; for a billboard without
+ * width/height tags the record's size is an assumption just like OSM2World's default model, so the texture is put
+ * onto OSM2World's own poster instead.</li>
  * </ul>
  * Pages are read from their {@code web} derivative (WebP) and checked against its sha256.
  * Anything unmatched or unavailable keeps OSM2World's own appearance.
@@ -391,9 +394,27 @@ public class TexsetClient {
 			MapNode node = nodes.get(Long.parseLong(key.substring(1, key.indexOf(':'))));
 			if (node == null) continue;
 
+			double[] uv = numbers(s.get("uv"));
+
+			/* Without width/height tags the size in the record is an assumption, like OSM2World's own default size.
+			 * Then the texture goes onto OSM2World's own billboard model (the texture rectangle is stretched to the poster),
+			 * so the model and the texture do not show two different boards. */
+			var billboard = billboardOf(node);
+			if (billboard != null && !node.getTags().containsKey("width") && !node.getTags().containsKey("height")) {
+				List<VectorXYZ> poster = billboard.getPosterCorners();
+				VectorXZ dir = billboard.getDirection();
+				VectorXYZ front = new VectorXYZ(dir.x, 0, dir.z);
+				List<VectorXYZ> corners = poster.stream().map(c -> c.add(front.mult(OFFSET))).toList();
+				List<VectorXZ> tcs = List.of(texCoord(uv, 0, 0), texCoord(uv, 1, 0), texCoord(uv, 1, 1), texCoord(uv, 0, 1));
+				node.addRepresentation(new TexsetSurface.NodeFace(node, key, corners, tcs, front,
+						material(pageOfSurface.get(key), s)));
+				count++;
+				continue;
+			}
+
 			var plane = (Map<String, Object>) s.get("plane");
 			double[] o = numbers(plane.get("origin")), u = numbers(plane.get("u")), v = numbers(plane.get("v"));
-			double[] origin = numbers(s.get("origin")), size = numbers(s.get("size_m")), uv = numbers(s.get("uv"));
+			double[] origin = numbers(s.get("origin")), size = numbers(s.get("size_m"));
 
 			/* east-north-up -> OSM2World x (east), y (up), z (north); height_m is above the terrain */
 			VectorXZ originXZ = projection.toXZ(o[1], o[0]);
@@ -420,6 +441,13 @@ public class TexsetClient {
 
 		return count;
 
+	}
+
+	private static @Nullable StreetFurnitureModule.Billboard billboardOf(MapNode node) {
+		for (var rep : node.getRepresentations()) {
+			if (rep instanceof StreetFurnitureModule.Billboard b) return b;
+		}
+		return null;
 	}
 
 	private static double groundEle(MapNode node) {

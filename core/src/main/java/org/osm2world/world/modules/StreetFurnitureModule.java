@@ -720,6 +720,22 @@ public class StreetFurnitureModule extends AbstractModule {
 			return dimensions.minHeight;
 		}
 
+		/**
+		 * Returns the corners of the poster face: lower left, lower right, upper right, upper left as seen from the front.
+		 * Lets texture sets ({@link org.osm2world.texset}) put a texture onto this model.
+		 */
+		public List<VectorXYZ> getPosterCorners() {
+			VectorXYZ boardBase = getModelBase();
+			VectorXZ direction = getDirection();
+			if (getSupportBase() == null) {
+				boardBase = boardBase.add(direction.mult(0.01)); // same offset as in buildMeshesAndModels
+			}
+			VectorXZ boardVector = direction.rightNormal(); // points to the left as seen from the front
+			VectorXYZ left = boardBase.add(boardVector.mult(dimensions.width / 2));
+			VectorXYZ right = boardBase.add(boardVector.mult(-dimensions.width / 2));
+			return List.of(left, right, right.addY(dimensions.trueHeight), left.addY(dimensions.trueHeight));
+		}
+
 		@Override
 		public void buildMeshesAndModels(Target target) {
 
