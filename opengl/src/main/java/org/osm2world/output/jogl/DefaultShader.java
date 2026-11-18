@@ -31,6 +31,7 @@ import com.jogamp.opengl.util.texture.Texture;
  * <li> Screen Space Ambient Occlusion
  * <li> Phong shading
  * <li> Bumpmaps / Normalmaps
+ * <li> Parallax occlusion mapping (optional, see {@link ParallaxMappingParameters})
  * </ul>
  */
 public class DefaultShader extends AbstractPrimitiveShader {
@@ -57,6 +58,11 @@ public class DefaultShader extends AbstractPrimitiveShader {
 	 * so prevents self shadowing
 	 */
 	private static final double SSAO_SAMPLE_THRESHOLD = 0.15;
+
+	/** texture unit for the displacement map, directly after the units used by the texture layers */
+	private static final int DISPLACEMENT_TEXTURE_NUMBER = getGLTextureNumber(MAX_TEXTURE_LAYERS);
+
+	private ParallaxMappingParameters parallaxMapping = ParallaxMappingParameters.DISABLED;
 
 	private int projectionMatrixID;
 	private int modelViewMatrixID;
@@ -106,6 +112,7 @@ public class DefaultShader extends AbstractPrimitiveShader {
 		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "ShadowMap"), 0);
         gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "DepthMap"), 1);
         gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "NoiseTex"), 2);
+		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "DisplacementMap"), DISPLACEMENT_TEXTURE_NUMBER);
 		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "BumpMap"), getGLTextureNumber(0));
 		for (int i=0; i<MAX_TEXTURE_LAYERS; i++)
 			gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "Tex["+i+"]"), getGLTextureNumber(i));
@@ -128,6 +135,53 @@ public class DefaultShader extends AbstractPrimitiveShader {
 		// reset optional parts
 		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "useShadowMap"), 0);
 		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "useSSAO"), 0);
+		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "usePOM"), 0);
+	}
+
+	/**
+	 * Sets the settings for parallax occlusion mapping, which are applied to all materials set afterwards
+	 * using {@link #setMaterial(Material, JOGLTextureManager)}. POM is only used for materials
+	 * with a displacement texture in their first texture layer.
+	 */
+	public void setParallaxMapping(ParallaxMappingParameters parallaxMapping) {
+		this.parallaxMapping = parallaxMapping;
+		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "pomMaxLayers"), parallaxMapping.maxLayers);
+		gl.glUniform1f(gl.glGetUniformLocation(shaderProgram, "pomHeightScale"), parallaxMapping.heightScale);
+		gl.glUniform2f(gl.glGetUniformLocation(shaderProgram, "pomFade"),
+				parallaxMapping.fadeStart, parallaxMapping.fadeEnd);
+	}
+
+	/**
+	 * Binds the displacement texture of the material's first layer and switches parallax occlusion mapping on,
+	 * or switches it off if it is disabled or the material has no displacement texture.
+	 */
+	private void setDisplacementMap(Material material, JOGLTextureManager textureManager) {
+
+		TextureData displacementTexture = null;
+		if (parallaxMapping.enabled && !material.textureLayers().isEmpty()) {
+			displacementTexture = material.textureLayers().get(0).displacementTexture;
+		}
+
+		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "usePOM"), displacementTexture != null ? 1 : 0);
+
+		if (displacementTexture != null) {
+
+			int[] previousActiveTexture = new int[1];
+			gl.glGetIntegerv(GL.GL_ACTIVE_TEXTURE, previousActiveTexture, 0);
+
+			gl.glActiveTexture(GL.GL_TEXTURE0 + DISPLACEMENT_TEXTURE_NUMBER);
+			textureManager.getTextureForTextureData(displacementTexture).bind(gl);
+
+			int wrap = displacementTexture.wrap == Wrap.CLAMP ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+			gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
+			gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+
+			gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "DisplacementMap"), DISPLACEMENT_TEXTURE_NUMBER);
+
+			gl.glActiveTexture(previousActiveTexture[0]);
+
+		}
+
 	}
 
 	/**
@@ -285,6 +339,9 @@ public class DefaultShader extends AbstractPrimitiveShader {
 	    		gl.glUniform1i(gl.glGetUniformLocation(shaderProgram, "useTexture["+i+"]"), 0);
 	    	}
 	    }
+
+	    setDisplacementMap(material, textureManager);
+
 	   return true;
 	}
 
@@ -297,6 +354,7 @@ public class DefaultShader extends AbstractPrimitiveShader {
 		case 4: return GL.GL_TEXTURE4;
 		case 5: return GL.GL_TEXTURE5;
 		case 6: return GL.GL_TEXTURE6;
+		// unit 7 is used for the displacement map, see DISPLACEMENT_TEXTURE_NUMBER
 		default: throw new Error("programming error: unhandled texture number");
 		}
 	}

@@ -58,6 +58,14 @@ uniform bool useAlphaTreshold;
 uniform float alphaTreshold;
 
 uniform bool useBumpMaps;
+
+// optional parallax occlusion mapping (POM) for the first texture layer
+uniform bool usePOM;
+uniform sampler2D DisplacementMap; // height field: 1 = at the polygon surface, 0 = pomHeightScale below it
+uniform float pomHeightScale; // depth of the relief in metres
+uniform int pomMaxLayers; // maximum number of ray marching steps, at most POM_MAX_LAYERS
+uniform vec2 pomFade; // eye space distance in metres where the effect starts / ends to fade out
+const int POM_MAX_LAYERS = 64;
  
 // output to buffer
 out vec4 FragColor;
@@ -89,6 +97,76 @@ vec3 toonShade( vec3 lightDir, vec3 norm, out vec3 ambient, out vec3 diffuse )
 	diffuse = Light.Ld * floor( cosine * levels ) * scaleFactor;
 	
 	return ambient + diffuse;
+}
+
+/*
+ * Parallax occlusion mapping: finds the texture coordinates at which the view ray hits the height field
+ * described by DisplacementMap. The ray enters the surface at texCoord and is marched in equally spaced
+ * layers until it falls below the height field. The two layers around the hit are then linearly interpolated.
+ *
+ * All vectors are in eye space. viewDir points from the surface to the eye, normal is the unit surface normal.
+ * Has to be called from uniform control flow, because it uses screen space derivatives.
+ */
+vec2 parallaxTexCoord( vec2 texCoord, vec3 viewDir, vec3 normal )
+{
+	// derivatives of eye position and texture coordinate along the screen axes
+	vec3 dpx = dFdx(VertexEye);
+	vec3 dpy = dFdy(VertexEye);
+	vec2 dtx = dFdx(texCoord);
+	vec2 dty = dFdy(texCoord);
+
+	float cosView = dot(viewDir, normal);
+	if ( cosView <= 0.0 )
+		return texCoord;
+
+	// distance based fade: the displaced depth shrinks to 0, which equals plain texture mapping
+	float dist = length(VertexEye);
+	float fade = 1.0;
+	if ( pomFade.y > pomFade.x )
+		fade = 1.0 - smoothstep(pomFade.x, pomFade.y, dist);
+	if ( fade <= 0.0 )
+		return texCoord;
+
+	// gradients of u and v on the surface plane (texture units per metre), found by requiring that
+	// dot(gradient, dp) equals the observed change of the texture coordinate for both screen axes
+	vec3 n = cross(dpx, dpy);
+	float nn = dot(n, n);
+	if ( nn < 1e-12 )
+		return texCoord;
+	vec3 gradU = (dtx.x * cross(dpy, n) + dty.x * cross(n, dpx)) / nn;
+	vec3 gradV = (dtx.y * cross(dpy, n) + dty.y * cross(n, dpx)) / nn;
+
+	// texture coordinate shift of the ray when it has descended by the full relief depth
+	vec2 fullShift = -vec2(dot(gradU, viewDir), dot(gradV, viewDir)) / max(cosView, 0.1)
+			* (pomHeightScale * fade);
+
+	// more layers at grazing angles, where the ray travels further through the relief
+	float numLayers = mix(float(pomMaxLayers), max(2.0, 0.25 * float(pomMaxLayers)), cosView);
+	float layerDepth = 1.0 / numLayers;
+
+	float rayDepth = 0.0; // 0 at the polygon surface, 1 at the bottom of the relief
+	vec2 current = texCoord;
+	float surfaceDepth = 1.0 - textureGrad(DisplacementMap, current, dtx, dty).r;
+	vec2 previous = current;
+	float previousRayDepth = 0.0;
+	float previousSurfaceDepth = surfaceDepth;
+
+	for ( int i = 0; i < POM_MAX_LAYERS; ++i ) {
+		if ( float(i) >= numLayers || rayDepth >= surfaceDepth )
+			break;
+		previous = current;
+		previousRayDepth = rayDepth;
+		previousSurfaceDepth = surfaceDepth;
+		rayDepth += layerDepth;
+		current = texCoord + fullShift * rayDepth;
+		surfaceDepth = 1.0 - textureGrad(DisplacementMap, current, dtx, dty).r;
+	}
+
+	// linear refinement: intersect the ray with the straight line between the two height samples
+	float before = previousSurfaceDepth - previousRayDepth; // above the surface (positive) or on it
+	float after = rayDepth - surfaceDepth; // below the surface (positive) or on it
+	float t = (before + after) > 1e-5 ? clamp(before / (before + after), 0.0, 1.0) : 1.0;
+	return mix(previous, current, t);
 }
 
 //float linearizeDepthPerspective(in float depth, in mat4 projMatrix) {
@@ -192,7 +270,12 @@ void main()
 	// apply textures
 	// TODO: autogenerate based on MAX_TEXTURE_LAYERS
 	if ( useTexture[0] ) {
-		texColor = texture( Tex[0], TexCoord0 );
+		vec2 texCoord0 = TexCoord0;
+		if ( usePOM ) {
+			vec3 pomViewDir = ProjectionMatrix[3][3] == 0.0 ? normalize(-VertexEye) : vec3(0.0, 0.0, 1.0);
+			texCoord0 = parallaxTexCoord( TexCoord0, pomViewDir, normalize(NormalEye) );
+		}
+		texColor = texture( Tex[0], texCoord0 );
 	}
 	texColor = texColor * vec4(Material.Color, 1.0); // color first layer only
 	if ( useTexture[1] ) {

@@ -269,6 +269,7 @@ public class JOGLOutputShader extends AbstractJOGLOutput implements JOGLOutput {
 		/* apply camera and projection information */
 		defaultShader.useShader();
 		defaultShader.loadDefaults();
+		defaultShader.setParallaxMapping(renderingParameters.parallaxMapping);
 
 		if (showShadowPerspective)
 			defaultShader.setPMVMatrix(shadowMapShader.getPMVMatrix());
@@ -360,6 +361,7 @@ public class JOGLOutputShader extends AbstractJOGLOutput implements JOGLOutput {
 		    applyRenderingParameters(gl, renderingParameters);
 		    defaultShader.useShader();
 			defaultShader.loadDefaults();
+			defaultShader.setParallaxMapping(renderingParameters.parallaxMapping);
 			defaultShader.setPMVMatrix(pmvMatrix);
 			defaultShader.setShadowed(true);
 
@@ -405,6 +407,7 @@ public class JOGLOutputShader extends AbstractJOGLOutput implements JOGLOutput {
 		    //       (needs to be investigated, if the difference is noticeable in practice)
 		    defaultShader.useShader();
 			defaultShader.loadDefaults();
+			defaultShader.setParallaxMapping(renderingParameters.parallaxMapping);
 			defaultShader.setPMVMatrix(pmvMatrix);
 
 			/* apply global rendering parameters */
