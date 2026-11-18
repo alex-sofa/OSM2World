@@ -287,7 +287,8 @@ public class ImageExporter {
 			boolean overwriteProjectionClippingPlanes = "true".equals(config.getString("overwriteProjectionClippingPlanes"));
 			target = new JOGLOutputShader(gl.getGL3(),
 					new JOGLRenderingParameters(CCW, false, true, drawBoundingBox, shadowVolumes, shadowMaps, shadowMapWidth, shadowMapHeight,
-			    			shadowMapCameraFrustumPadding, useSSAO, SSAOkernelSize, SSAOradius, overwriteProjectionClippingPlanes),
+			    			shadowMapCameraFrustumPadding, useSSAO, SSAOkernelSize, SSAOradius, overwriteProjectionClippingPlanes,
+			    			ParallaxMappingParameters.fromConfig(config)),
 					GlobalLightingParameters.DEFAULT);
 		} else {
 			target = new JOGLOutputFixedFunction(gl.getGL2(),

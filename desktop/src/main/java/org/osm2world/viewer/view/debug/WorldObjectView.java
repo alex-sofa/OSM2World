@@ -11,6 +11,7 @@ import org.osm2world.output.common.rendering.Camera;
 import org.osm2world.output.common.rendering.Projection;
 import org.osm2world.output.jogl.JOGLOutput;
 import org.osm2world.output.jogl.JOGLRenderingParameters;
+import org.osm2world.output.jogl.ParallaxMappingParameters;
 import org.osm2world.scene.Scene;
 import org.osm2world.scene.mesh.MeshStore;
 import org.osm2world.scene.mesh.MeshWithMetadata;
@@ -72,7 +73,8 @@ public class WorldObjectView extends DebugView {
 		target.setRenderingParameters(new JOGLRenderingParameters(
 				renderOptions.isBackfaceCulling() ? CCW : null,
     			renderOptions.isWireframe(), true, drawBoundingBox, shadowVolumes, shadowMaps, shadowMapWidth, shadowMapHeight,
-    			shadowMapCameraFrustumPadding, useSSAO, SSAOkernelSize, SSAOradius, overwriteProjectionClippingPlanes));
+    			shadowMapCameraFrustumPadding, useSSAO, SSAOkernelSize, SSAOradius, overwriteProjectionClippingPlanes,
+    			ParallaxMappingParameters.fromConfig(config)));
 
 		target.setGlobalLightingParameters(GlobalLightingParameters.DEFAULT);
 

@@ -32,6 +32,7 @@ public class JOGLRenderingParameters {
 	final int SSAOkernelSize;
 	final float SSAOradius;
 	final boolean overwriteProjectionClippingPlanes;
+	final ParallaxMappingParameters parallaxMapping;
 
 	/**
 	 * @param frontFace
@@ -74,6 +75,22 @@ public class JOGLRenderingParameters {
 			Winding frontFace, boolean wireframe, boolean useZBuffer, boolean drawBoundingBox, boolean useShadowVolumes,
 			boolean useShadowMaps, int shadowMapWidth, int shadowMapHeight, int shadowMapCameraFrustumPadding,
 			boolean useSSAO, int SSAOkernelSize, float SSAOradius, boolean overwriteProjectionClippingPlanes) {
+		this(frontFace, wireframe, useZBuffer, drawBoundingBox, useShadowVolumes, useShadowMaps, shadowMapWidth,
+				shadowMapHeight, shadowMapCameraFrustumPadding, useSSAO, SSAOkernelSize, SSAOradius,
+				overwriteProjectionClippingPlanes, ParallaxMappingParameters.DISABLED);
+	}
+
+	/**
+	 * Same as the constructor without the last parameter, but allows enabling parallax occlusion mapping.
+	 *
+	 * @param parallaxMapping
+	 *            settings for the optional parallax occlusion mapping of materials with a displacement texture
+	 */
+	public JOGLRenderingParameters(
+			Winding frontFace, boolean wireframe, boolean useZBuffer, boolean drawBoundingBox, boolean useShadowVolumes,
+			boolean useShadowMaps, int shadowMapWidth, int shadowMapHeight, int shadowMapCameraFrustumPadding,
+			boolean useSSAO, int SSAOkernelSize, float SSAOradius, boolean overwriteProjectionClippingPlanes,
+			ParallaxMappingParameters parallaxMapping) {
 
 		this.frontFace = frontFace;
 		this.wireframe = wireframe;
@@ -88,6 +105,7 @@ public class JOGLRenderingParameters {
 		this.SSAOkernelSize = SSAOkernelSize;
 		this.SSAOradius = SSAOradius;
 		this.overwriteProjectionClippingPlanes = overwriteProjectionClippingPlanes;
+		this.parallaxMapping = parallaxMapping;
 	}
 
 	/**
@@ -112,6 +130,7 @@ public class JOGLRenderingParameters {
 		this.SSAOkernelSize = 0;
 		this.SSAOradius = 0;
 		this.overwriteProjectionClippingPlanes = false;
+		this.parallaxMapping = ParallaxMappingParameters.DISABLED;
 	}
 
 	public JOGLRenderingParameters() {
@@ -128,6 +147,7 @@ public class JOGLRenderingParameters {
 		this.SSAOkernelSize = 0;
 		this.SSAOradius = 0;
 		this.overwriteProjectionClippingPlanes = false;
+		this.parallaxMapping = ParallaxMappingParameters.DISABLED;
 	}
 
 }
