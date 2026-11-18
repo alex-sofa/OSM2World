@@ -4,12 +4,13 @@ OSM2World can add photo textures that a texture server publishes per OSM object,
 (specification: `docs/TEXTURE_FORMAT.md` and `docs/TEXTURE_CLIENT_SPEC.md` in https://github.com/alexschultze/dev-open-3d-builder).
 
 ```properties
-# one or more bootstrap URLs (comma-separated), each serving textures/<region>/latest.json
-texsetUrl = https://textures.malpy.de/
+# one or more cdn URLs (comma-separated), each serving textures/<region>/latest.json
+texsetUrl = https://textures-cdn1.malpy.de/
 texsetRegion = bodensee
 ```
 
-When `texsetUrl` is set, the conversion loads `latest.json`, picks a mirror (weighted random, failover to the others),
+When `texsetUrl` is set, the conversion loads `latest.json` from every configured cdn (the highest `release` wins), picks a cdn from its `cdns`
+(weighted random, failover to the others),
 loads `manifest.json` and the cell indices (XYZ z16) covering the data bounds, and adds a textured quad for every surface
 it can match. Without the property nothing changes.
 

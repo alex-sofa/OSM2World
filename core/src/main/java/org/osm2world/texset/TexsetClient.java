@@ -36,8 +36,8 @@ import org.osm2world.world.modules.building.BuildingPart;
  * Client for streamed texture sets (format {@code osm3d-texset/0.4}, no other version is read): walls with the
  * outward test and the height model, wall chains and node faces with {@code basis}.
  * <p>
- * Enabled by the config property {@code texsetUrl} (one or more bootstrap URLs, comma-separated, each serving
- * {@code textures/<region>/latest.json}) and {@code texsetRegion}. It loads latest.json, picks a mirror,
+ * Enabled by the config property {@code texsetUrl} (one or more cdn URLs, comma-separated, each serving
+ * {@code textures/<region>/latest.json}) and {@code texsetRegion}. It loads latest.json from every cdn (highest release wins), picks a cdn,
  * loads the manifest and the cell indices (XYZ z16) of the data bounds, and adds a {@link TexsetSurface}
  * for every matching surface:
  * <ul>
@@ -69,11 +69,11 @@ public class TexsetClient {
 
 	private final O2WConfig config;
 	private final MapProjection projection;
-	private final List<String> bootstrap;
+	private final List<String> configCdns; // cdn URLs of the config
 	private final String region;
 
-	private List<String> mirrors = List.of();
-	private int mirrorIndex = 0;
+	private List<String> cdns = List.of();
+	private int cdnIndex = 0;
 	private String release;
 
 	private final Map<String, Material> materialsByPage = new HashMap<>();
@@ -96,7 +96,7 @@ public class TexsetClient {
 	TexsetClient(O2WConfig config, MapProjection projection) {
 		this.config = config;
 		this.projection = projection;
-		this.bootstrap = Arrays.stream(config.getString("texsetUrl").split(","))
+		this.configCdns = Arrays.stream(config.getString("texsetUrl").split(","))
 				.map(String::trim).map(s -> s.endsWith("/") ? s : s + "/").toList();
 		this.region = config.getString("texsetRegion", "bodensee");
 	}
@@ -108,45 +108,47 @@ public class TexsetClient {
 		return JsonUtil.fromJson(json, Map.class);
 	}
 
-	/** fetches a path relative to textures/<region>/ from the current mirror, failing over to the next ones */
-	private @Nullable byte[] fetchFromMirror(String path) {
-		for (int attempt = 0; attempt < mirrors.size(); attempt++) {
-			String base = mirrors.get((mirrorIndex + attempt) % mirrors.size());
+	/** fetches a path relative to textures/<region>/ from the current cdn, failing over to the next ones */
+	private @Nullable byte[] fetchFromCdn(String path) {
+		for (int attempt = 0; attempt < cdns.size(); attempt++) {
+			String base = cdns.get((cdnIndex + attempt) % cdns.size());
 			try {
 				byte[] result = LoadUriUtil.fetchBinary(URI.create(base + "textures/" + region + "/" + path));
-				mirrorIndex = (mirrorIndex + attempt) % mirrors.size();
+				cdnIndex = (cdnIndex + attempt) % cdns.size();
 				return result;
 			} catch (IOException e) {
-				// 404, network error, 429 or 5xx: the URI API does not tell them apart, try the next mirror
+				// 404, network error, 429 or 5xx: the URI API does not tell them apart, try the next cdn
 			}
 		}
 		return null; // treated as "no texture here"
 	}
 
 	private @Nullable Map<String, Object> fetchJson(String path) throws IOException {
-		byte[] data = fetchFromMirror(path);
+		byte[] data = fetchFromCdn(path);
 		return data == null ? null : parse(new String(data, StandardCharsets.UTF_8));
 	}
 
 	@SuppressWarnings("unchecked")
 	private void run(MapData mapData) throws IOException {
 
+		/* latest.json from every configured cdn; the highest release wins (cdns may lag during replication) */
 		Map<String, Object> latest = null;
-		for (String b : bootstrap) {
+		for (String b : configCdns) {
 			try {
-				latest = parse(LoadUriUtil.fetchText(URI.create(b + "textures/" + region + "/latest.json")));
-				break;
+				var candidate = parse(LoadUriUtil.fetchText(URI.create(b + "textures/" + region + "/latest.json")));
+				if (!FORMAT.equals(candidate.get("format")) || !(candidate.get("release") instanceof String r)) continue;
+				if (latest == null || r.compareTo((String) latest.get("release")) > 0) latest = candidate;
 			} catch (IOException e) {
-				// try the next bootstrap URL
+				// this cdn did not answer, try the next one
 			}
 		}
-		if (latest == null || !FORMAT.equals(latest.get("format"))) {
-			ConversionLog.log(WARNING, "texture set: no latest.json of format " + FORMAT, null, null);
+		if (latest == null) {
+			ConversionLog.log(WARNING, "texture set: no cdn answered with a latest.json of format " + FORMAT, null, null);
 			return;
 		}
 
 		release = (String) latest.get("release");
-		mirrors = pickMirrorOrder((List<Map<String, Object>>) latest.get("mirrors"));
+		cdns = pickCdnOrder((List<Map<String, Object>>) latest.get("cdns"));
 
 		Map<String, Object> manifest = fetchJson((String) latest.get("manifest"));
 		if (manifest == null || !FORMAT.equals(manifest.get("format"))) {
@@ -187,26 +189,26 @@ public class TexsetClient {
 
 	}
 
-	/** weighted random first mirror, the others as failover in their listed order */
-	private static List<String> pickMirrorOrder(List<Map<String, Object>> mirrorRecords) {
-		if (mirrorRecords == null || mirrorRecords.isEmpty()) return List.of();
-		double total = mirrorRecords.stream().mapToDouble(TexsetClient::weight).sum();
+	/** weighted random first cdn, the others as failover in their listed order */
+	private static List<String> pickCdnOrder(List<Map<String, Object>> cdnRecords) {
+		if (cdnRecords == null || cdnRecords.isEmpty()) return List.of();
+		double total = cdnRecords.stream().mapToDouble(TexsetClient::weight).sum();
 		double r = new Random().nextDouble() * total;
 		int first = 0;
-		for (int i = 0; i < mirrorRecords.size(); i++) {
-			r -= weight(mirrorRecords.get(i));
+		for (int i = 0; i < cdnRecords.size(); i++) {
+			r -= weight(cdnRecords.get(i));
 			if (r <= 0) { first = i; break; }
 		}
 		List<String> result = new ArrayList<>();
-		for (int i = 0; i < mirrorRecords.size(); i++) {
-			String url = (String) mirrorRecords.get((first + i) % mirrorRecords.size()).get("url");
+		for (int i = 0; i < cdnRecords.size(); i++) {
+			String url = (String) cdnRecords.get((first + i) % cdnRecords.size()).get("url");
 			result.add(url.endsWith("/") ? url : url + "/");
 		}
 		return result;
 	}
 
-	private static double weight(Map<String, Object> mirror) {
-		return mirror.get("weight") instanceof Number n ? n.doubleValue() : 1.0;
+	private static double weight(Map<String, Object> cdn) {
+		return cdn.get("weight") instanceof Number n ? n.doubleValue() : 1.0;
 	}
 
 	static int[] cellOf(double lon, double lat) {
@@ -229,7 +231,7 @@ public class TexsetClient {
 			String file = (String) web.get("file");
 			Material cached = materialsByPage.get(file);
 			if (cached != null) return cached;
-			byte[] data = fetchFromMirror(release + "/" + file);
+			byte[] data = fetchFromCdn(release + "/" + file);
 			if (data != null && (web.get("sha256") == null || web.get("sha256").equals(sha256(data)))
 					&& TexsetPageTexture.decodes(data)) {
 				var texture = new TexsetPageTexture(file, data);
