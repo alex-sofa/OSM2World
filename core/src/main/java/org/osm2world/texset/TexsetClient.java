@@ -33,7 +33,8 @@ import org.osm2world.world.modules.building.Building;
 import org.osm2world.world.modules.building.BuildingPart;
 
 /**
- * Client for streamed texture sets (format {@code osm3d-texset/0.3}), conformance level 1 (walls) plus node faces.
+ * Client for streamed texture sets (format {@code osm3d-texset/0.4}, no other version is read): walls with the
+ * outward test and the height model, wall chains and node faces with {@code basis}.
  * <p>
  * Enabled by the config property {@code texsetUrl} (one or more bootstrap URLs, comma-separated, each serving
  * {@code textures/<region>/latest.json}) and {@code texsetRegion}. It loads latest.json, picks a mirror,
@@ -42,20 +43,29 @@ import org.osm2world.world.modules.building.BuildingPart;
  * <ul>
  * <li>walls of building parts mapped as ways, matched by the key {@code w<way id>:wall:<node a>-<node b>}
  * (either node order); because the map projection rounds positions, the exact geom_hash cannot be reproduced,
- * so the geometry is checked against the stored {@code edge} with the position tolerance (0.3 m) instead;</li>
- * <li>node faces {@code n<id>:face} (e.g. billboards), placed by their {@code plane}; for a billboard without
- * width/height tags the record's size is an assumption just like OSM2World's default model, so the texture is put
- * onto OSM2World's own poster instead.</li>
+ * so the geometry is checked against the stored {@code edge} with the position tolerance (0.3 m) instead, and the
+ * outer normal must be within 45° of {@code outward};</li>
+ * <li>wall chains {@code w<way id>:walls:<first>-<last>}: the {@code nodes} are found in the ring (either direction),
+ * every node is checked against {@code chain}, u is the arc length (scaled to the stored length if they differ by
+ * less than 2 %);</li>
+ * <li>v is in metres from OSM2World's wall base, clipped at its wall top; stretched to OSM2World's wall height only
+ * when {@code basis.height} is {@code assumed};</li>
+ * <li>part walls: OSM2World draws the parts of Simple 3D Buildings, so they match by their own key
+ * ({@code outline_key} is not needed);</li>
+ * <li>node faces {@code n<id>:face} (e.g. billboards), placed by their {@code plane}; where {@code basis.size} is
+ * {@code assumed} the texture goes onto OSM2World's own billboard model instead, so there is only one board.</li>
  * </ul>
  * Pages are read from their {@code web} derivative (WebP) and checked against its sha256.
  * Anything unmatched or unavailable keeps OSM2World's own appearance.
  */
 public class TexsetClient {
 
-	public static final String FORMAT = "osm3d-texset/0.3";
+	public static final String FORMAT = "osm3d-texset/0.4";
 	private static final int Z = 16;
 	private static final double TOLERANCE = 0.3;
 	private static final double OFFSET = 0.03;
+	private static final double OUTWARD_TOLERANCE = 45; // degrees
+	private static final double METERS_PER_DEGREE = 111319.49; // arc length of wall chains
 
 	private final O2WConfig config;
 	private final MapProjection projection;
@@ -220,7 +230,8 @@ public class TexsetClient {
 			Material cached = materialsByPage.get(file);
 			if (cached != null) return cached;
 			byte[] data = fetchFromMirror(release + "/" + file);
-			if (data != null && (web.get("sha256") == null || web.get("sha256").equals(sha256(data)))) {
+			if (data != null && (web.get("sha256") == null || web.get("sha256").equals(sha256(data)))
+					&& TexsetPageTexture.decodes(data)) {
 				var texture = new TexsetPageTexture(file, data);
 				Material m = new Material(Material.Interpolation.FLAT, Color.WHITE, false, Material.Transparency.BINARY,
 						Material.Shadow.TRUE, Material.AmbientOcclusion.TRUE,
@@ -228,7 +239,7 @@ public class TexsetClient {
 				materialsByPage.put(file, m);
 				return m;
 			}
-			ConversionLog.log(WARNING, "texture set: page " + file + " missing or with a wrong sha256", null, null);
+			ConversionLog.log(WARNING, "texture set: page " + file + " missing, with a wrong sha256 or not decodable", null, null);
 		}
 
 		return new Material(Material.Interpolation.FLAT, t0Color(surface));
@@ -277,6 +288,15 @@ public class TexsetClient {
 	private int addWalls(MapData mapData, Map<String, Map<String, Object>> surfaces,
 			Map<String, Map<String, Object>> pageOfSurface) {
 
+		/* wall chains by way id */
+		Map<Long, List<Map<String, Object>>> chainsByWay = new HashMap<>();
+		for (var s : surfaces.values()) {
+			String key = (String) s.get("key");
+			if (key.matches("w\\d+:walls:\\d+-\\d+")) {
+				chainsByWay.computeIfAbsent(Long.parseLong(key.substring(1, key.indexOf(':'))), k -> new ArrayList<>()).add(s);
+			}
+		}
+
 		int count = 0;
 
 		for (MapArea area : mapData.getMapAreas()) {
@@ -312,13 +332,17 @@ public class TexsetClient {
 							} else {
 								continue;
 							}
-							if (!edgeMatches(s, a, b)) continue; // geometry changed: keep the default (T0 of OSM2World)
-							TexsetSurface wall = buildWall(partArea, s, pageOfSurface.get((String) s.get("key")),
-									a.getPos(), b.getPos(), sideAB, base, top);
+							// geometry changed or other side: keep the default (T0 of OSM2World)
+							if (!edgeMatches(s, a, b) || !outwardMatches(s, a.getPos(), b.getPos(), sideAB)) continue;
+							TexsetSurface wall = buildPiece(partArea, s, pageOfSurface.get((String) s.get("key")),
+									a.getPos(), b.getPos(), sideAB, base, top, 0, 1);
 							if (wall != null) {
 								partArea.addRepresentation((TexsetSurface.Wall) wall);
 								count++;
 							}
+						}
+						for (var chain : chainsByWay.getOrDefault(partArea.getId(), List.of())) {
+							count += addChain(partArea, chain, pageOfSurface.get((String) chain.get("key")), ring, side, base, top);
 						}
 					}
 				}
@@ -326,6 +350,71 @@ public class TexsetClient {
 		}
 
 		return count;
+
+	}
+
+	/** wall chain on a ring (closed, last node = first node): consecutive edges carrying the chain's nodes */
+	private int addChain(MapArea area, Map<String, Object> s, Map<String, Object> page, List<MapNode> ring,
+			int side, double base, double top) {
+
+		long[] ids = ((List<?>) s.get("nodes")).stream().mapToLong(o -> ((Number) o).longValue()).toArray();
+		List<?> chain = (List<?>) s.get("chain");
+		if (ids.length < 3 || chain == null || chain.size() != ids.length) return 0;
+		int n = ring.size() - 1;
+		if (n < 3) return 0;
+
+		/* find the run in the ring, either direction */
+		List<MapNode> run = null;
+		int runSide = side;
+		for (int start = 0; start < n && run == null; start++) {
+			if (ring.get(start).getId() != ids[0]) continue;
+			for (int dir : new int[] {1, -1}) {
+				List<MapNode> candidate = new ArrayList<>();
+				for (int k = 0; k < ids.length; k++) {
+					MapNode node = ring.get(((start + dir * k) % n + n) % n);
+					if (node.getId() != ids[k]) { candidate = null; break; }
+					candidate.add(node);
+				}
+				if (candidate != null) {
+					run = candidate;
+					runSide = dir > 0 ? side : -side;
+					break;
+				}
+			}
+		}
+		if (run == null) return 0;
+
+		/* geometry check against the stored positions, then the outward test on the chord */
+		for (int k = 0; k < ids.length; k++) {
+			double[] p = numbers(chain.get(k));
+			if (projection.toXZ(p[1], p[0]).distanceTo(run.get(k).getPos()) > TOLERANCE) return 0;
+		}
+		if (!outwardMatches(s, run.get(0).getPos(), run.get(run.size() - 1).getPos(), runSide)) return 0;
+
+		/* arc lengths: stored (local approximation of the format) and OSM2World's own */
+		double meanLat = chain.stream().mapToDouble(p -> numbers(p)[1]).average().orElse(0);
+		double kx = cos(toRadians(meanLat)) * METERS_PER_DEGREE;
+		double stored = 0, own = 0;
+		for (int k = 1; k < ids.length; k++) {
+			double[] p = numbers(chain.get(k - 1)), q = numbers(chain.get(k));
+			stored += hypot((q[0] - p[0]) * kx, (q[1] - p[1]) * METERS_PER_DEGREE);
+			own += run.get(k - 1).getPos().distanceTo(run.get(k).getPos());
+		}
+		if (abs(own - stored) > 0.02 * stored) return 0;
+		double scale = stored / own;
+
+		int count = 0;
+		double arc = 0;
+		for (int k = 1; k < ids.length; k++) {
+			VectorXZ a = run.get(k - 1).getPos(), b = run.get(k).getPos();
+			TexsetSurface piece = buildPiece(area, s, page, a, b, runSide, base, top, arc, scale);
+			if (piece != null) {
+				area.addRepresentation((TexsetSurface.Wall) piece);
+				count++;
+			}
+			arc += a.distanceTo(b) * scale;
+		}
+		return count > 0 ? 1 : 0;
 
 	}
 
@@ -345,27 +434,50 @@ public class TexsetClient {
 		return sa.distanceTo(a.getPos()) <= TOLERANCE && sb.distanceTo(b.getPos()) <= TOLERANCE;
 	}
 
-	private @Nullable TexsetSurface buildWall(MapArea area, Map<String, Object> s, Map<String, Object> page,
-			VectorXZ a, VectorXZ b, int side, double base, double top) {
+	/** P1: the outer normal of a -> b (outer face right of it for side +1) must be within 45° of {@code outward} */
+	private static boolean outwardMatches(Map<String, Object> surface, VectorXZ a, VectorXZ b, int side) {
+		if (!(surface.get("outward") instanceof Number outward)) return false;
+		VectorXZ d = b.subtract(a);
+		double azimuth = toDegrees(atan2(side * d.z, -side * d.x)); // x = east, z = north
+		double diff = abs(((azimuth - outward.doubleValue()) % 360 + 540) % 360 - 180);
+		return diff <= OUTWARD_TOLERANCE;
+	}
+
+	/** P2: v scale, 1 unless the record's wall height is an assumption; then stretched to OSM2World's wall */
+	@SuppressWarnings("unchecked")
+	private static double vScale(Map<String, Object> s, double base, double top) {
+		var basis = (Map<String, Object>) s.get("basis");
+		if (basis == null || !"assumed".equals(basis.get("height")) || s.get("wall_m") == null) return 1;
+		double[] wm = numbers(s.get("wall_m"));
+		return wm[1] > wm[0] && top > base ? (top - base) / (wm[1] - wm[0]) : 1;
+	}
+
+	/**
+	 * One quad on the edge a -> b. Texture u at a is {@code uStart} and grows by {@code uPerMetre} along the edge;
+	 * v is metres above the wall base. The texture rectangle is clipped to the edge and to the wall height.
+	 */
+	private @Nullable TexsetSurface buildPiece(MapArea area, Map<String, Object> s, Map<String, Object> page,
+			VectorXZ a, VectorXZ b, int side, double base, double top, double uStart, double uPerMetre) {
 
 		double len = a.distanceTo(b);
 		if (len < 0.01) return null;
 		VectorXZ d = b.subtract(a).normalize();
 		VectorXZ outward = new VectorXZ(side * d.z, -side * d.x); // right of a -> b for side = +1
+		double vs = vScale(s, base, top);
 
 		double[] origin = numbers(s.get("origin")), size = numbers(s.get("size_m")), uv = numbers(s.get("uv"));
 
-		/* texture rectangle, clipped to the wall */
-		double s0 = max(origin[0], 0), s1 = min(origin[0] + size[0], len);
-		double t0 = max(origin[1], 0), t1 = min(origin[1] + size[1], top - base);
+		/* texture rectangle (texture metres), clipped to the edge and the wall */
+		double s0 = max(origin[0], uStart), s1 = min(origin[0] + size[0], uStart + len * uPerMetre);
+		double t0 = max(origin[1], 0), t1 = min(origin[1] + size[1], (top - base) / vs);
 		if (s1 <= s0 || t1 <= t0) return null;
 
 		List<VectorXYZ> corners = new ArrayList<>();
 		List<VectorXZ> tcs = new ArrayList<>();
 		double[][] st = {{s0, t0}, {s1, t0}, {s1, t1}, {s0, t1}};
 		for (double[] p : st) {
-			VectorXZ xz = a.add(d.mult(p[0])).add(outward.mult(OFFSET));
-			corners.add(new VectorXYZ(xz.x, base + p[1], xz.z));
+			VectorXZ xz = a.add(d.mult((p[0] - uStart) / uPerMetre)).add(outward.mult(OFFSET));
+			corners.add(new VectorXYZ(xz.x, base + p[1] * vs, xz.z));
 			tcs.add(texCoord(uv, (p[0] - origin[0]) / size[0], (p[1] - origin[1]) / size[1]));
 		}
 
@@ -396,11 +508,12 @@ public class TexsetClient {
 
 			double[] uv = numbers(s.get("uv"));
 
-			/* Without width/height tags the size in the record is an assumption, like OSM2World's own default size.
-			 * Then the texture goes onto OSM2World's own billboard model (the texture rectangle is stretched to the poster),
-			 * so the model and the texture do not show two different boards. */
+			/* P6: where the record's size is an assumption (like OSM2World's own default size), the texture goes onto
+			 * OSM2World's own billboard model (the texture rectangle is stretched to the poster), so the model and the
+			 * texture do not show two different boards. Tagged or measured sizes use the record's plane. */
 			var billboard = billboardOf(node);
-			if (billboard != null && !node.getTags().containsKey("width") && !node.getTags().containsKey("height")) {
+			var basis = (Map<String, Object>) s.get("basis");
+			if (billboard != null && basis != null && "assumed".equals(basis.get("size"))) {
 				List<VectorXYZ> poster = billboard.getPosterCorners();
 				VectorXZ dir = billboard.getDirection();
 				VectorXYZ front = new VectorXYZ(dir.x, 0, dir.z);

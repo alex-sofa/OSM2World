@@ -25,6 +25,15 @@ public class TexsetPageTexture extends RuntimeTexture {
 		this.data = data;
 	}
 
+	/** true if the page can be decoded here, checked before use so that a broken page falls back to T0 */
+	static boolean decodes(byte[] data) {
+		try {
+			return ImageIO.read(new ByteArrayInputStream(data)) != null;
+		} catch (IOException | RuntimeException e) {
+			return false;
+		}
+	}
+
 	@Override
 	public BufferedImage createBufferedImage() {
 		try {

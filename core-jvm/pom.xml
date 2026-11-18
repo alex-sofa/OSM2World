@@ -55,7 +55,7 @@
 			<!-- WebP decoding for the web derivative of texture set pages (org.osm2world.texset) -->
 			<groupId>com.twelvemonkeys.imageio</groupId>
 			<artifactId>imageio-webp</artifactId>
-			<version>3.12.0</version>
+			<version>3.15.3</version>
 		</dependency>
 
 		<dependency>
