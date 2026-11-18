@@ -1,6 +1,6 @@
 # Roadmap: streamed textures per OSM entity
 
-Status: draft · scope: phase 1 covers **walls only**
+Status: draft · scope: phase 1 covers **walls only** · **implemented (experimental): walls and node faces with the `web` derivative, see [TEXTURE_SET.md](TEXTURE_SET.md)**
 
 ## Goal
 

@@ -57,6 +57,7 @@ import org.osm2world.world.creation.WorldCreator;
 import org.osm2world.world.creation.WorldModule;
 import org.osm2world.world.data.WorldObject;
 import org.osm2world.world.modules.*;
+import org.osm2world.texset.TexsetClient;
 import org.osm2world.world.modules.building.BuildingModule;
 import org.osm2world.world.modules.building.indoor.IndoorModule;
 import org.osm2world.world.modules.traffic_sign.TrafficSignModule;
@@ -184,6 +185,9 @@ class O2WConverterImpl {
 
 		calculateElevations(mapData, eleData, config);
 		attachConnectors(mapData);
+
+		/* add textured surfaces from a texture set (only if texsetUrl is configured) */
+		TexsetClient.addTexturedSurfaces(mapData, mapProjection, config);
 
 		/* convert 3d scene to target representation */
 		updatePhase(perfListener, ProgressListener.Phase.OUTPUT);
